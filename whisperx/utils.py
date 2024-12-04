@@ -341,6 +341,11 @@ class WriteVTT(SubtitlesWriter):
         for start, end, text in self.iterate_result(result, options):
             print(f"{start} --> {end}\n{text}\n", file=file, flush=True)
 
+        txt_filename = file.name.replace('.vtt', '-v.txt')
+        with open(txt_filename, 'w') as txt_file:
+            for start, end, text in self.iterate_result(result, options):
+                text = text.replace(': ', '\n').replace('[', '').replace(']', ':')
+                print(f"{text}\n", file=txt_file, flush=True)
 
 class WriteSRT(SubtitlesWriter):
     extension: str = "srt"
