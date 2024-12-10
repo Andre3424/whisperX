@@ -4,6 +4,91 @@ import re
 import sys
 import zlib
 from typing import Callable, Optional, TextIO
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+from transformers import pipeline
+tokenizer = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
+model = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
+
+nlp = pipeline("ner", model=model, tokenizer=tokenizer)
+
+import re
+from collections import defaultdict
+
+def combine_entities(entities):
+    if not entities:
+        return []
+
+    combined_entities = []
+    current_combined = entities[0].copy()
+
+    for i in range(1, len(entities)):
+        prev_entity = entities[i - 1]
+        curr_entity = entities[i]
+
+        # Check if we can combine
+        if prev_entity['end'] >= curr_entity['start'] - 1:
+            # Extend the current_combined entry
+            current_combined['word'] += ' ' + curr_entity['word']
+            current_combined['end'] = curr_entity['end']  # Update end to the current entity's end
+            current_combined['index'] = min(current_combined['index'], curr_entity['index'])  # Update index if needed
+        else:
+            # Add the combined entity to the list and start a new combination
+            combined_entities.append(current_combined)
+            current_combined = curr_entity.copy()
+
+    # Append the last combined entity
+    combined_entities.append(current_combined)
+
+    return combined_entities
+
+
+def anonymize_text(ner_output, input_text):
+    """
+    Anonymizes person and organization names in the text based on NER output.
+
+    Args:
+    - ner_output (list): List of dictionaries from NER model.
+    - input_text (str): Original text to be anonymized.
+
+    Returns:
+    - str: Anonymized text.
+    """
+
+    # Maps to hold unique replacements for PERSON and ORGANIZATION
+    person_map = {}
+    org_map = {}
+    person_counter = 1
+    org_counter = 1
+
+    # Gather entities and their positions
+    entities_to_replace = []
+    for entity in ner_output:
+        if entity["entity"].startswith("B-PER") or entity["entity"].startswith("I-PER"):
+            if entity["word"] not in person_map:
+                person_map[entity["word"]] = f"Max{person_counter}"
+                person_counter += 1
+            replacement = person_map[entity["word"]]
+        elif entity["entity"].startswith("B-ORG") or entity["entity"].startswith("I-ORG"):
+            if entity["word"] not in org_map:
+                org_map[entity["word"]] = f"Firma{org_counter}"
+                org_counter += 1
+            replacement = org_map[entity["word"]]
+        else:
+            continue
+        entities_to_replace.append((entity["start"], entity["end"], replacement))
+
+    # Sort replacements by start position to apply them in order
+    entities_to_replace.sort(key=lambda x: x[0])
+
+    # Replace text based on entities
+    anonymized_text = ""
+    last_index = 0
+    for start, end, replacement in entities_to_replace:
+        anonymized_text += input_text[last_index:start] + replacement
+        last_index = end
+    anonymized_text += input_text[last_index:]
+
+    return anonymized_text
 
 LANGUAGES = {
     "en": "english",
@@ -343,9 +428,15 @@ class WriteVTT(SubtitlesWriter):
 
         txt_filename = file.name.replace('.vtt', '-v.txt')
         with open(txt_filename, 'w') as txt_file:
-            for start, end, text in self.iterate_result(result, options):
+            # import pdb; pdb.set_trace()
+            for _, _, text in self.iterate_result(result, options):
                 text = text.replace(': ', '\n').replace('[', '').replace(']', ':')
                 print(f"{text}\n", file=txt_file, flush=True)
+
+        text = "\n\n".join([text for _, _, text in self.iterate_result(result, options)])
+        replaced_txt_filename = file.name.replace('.vtt', '-v3.txt')
+        with open(replaced_txt_filename, 'w') as replaced_txt_file:
+            replaced_txt_file.write(anonymize_text(combine_entities(nlp(text)), text))
 
 class WriteSRT(SubtitlesWriter):
     extension: str = "srt"
